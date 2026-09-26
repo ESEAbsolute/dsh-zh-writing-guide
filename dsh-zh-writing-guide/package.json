@@ -1,0 +1,31 @@
+{
+  "name": "@local/dsh-zh-writing-guide",
+  "version": "1.1.0",
+  "private": true,
+  "description": "中文写作规范插件：把《中文文案排版指北》和《中文技术文档的写作规范》注入 Agent 上下文，并提供规范查询（zh_writing_guide）与排版自检（zh_style_check）工具",
+  "type": "module",
+  "license": "MIT",
+  "main": "./index.js",
+  "exports": {
+    ".": "./index.js",
+    "./package.json": "./package.json",
+    "./locale/*.json": "./locale/*.json"
+  },
+  "files": [
+    "index.js",
+    "lib",
+    "locale",
+    "icon.svg",
+    "cordis.patch.yml",
+    "README.md"
+  ],
+  "icon": "./icon.svg",
+  "engines": {
+    "node": ">=22"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}

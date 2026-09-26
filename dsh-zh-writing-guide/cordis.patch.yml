@@ -1,0 +1,24 @@
+# 中文写作规范 · bundle patch
+#
+# 这一层只做一件事：把 Host 插件行插进 Loader 条目列表。
+# 包本身没有任何 npm 依赖，也不导出 schemastery 的 Config，因此这里的
+# config 会原样传给 index.js 的 normalizeConfig()，非法值回落到默认值。
+#
+# 可调项（全部可选）：
+#   promptSection  true      是否注册 system prompt 段落
+#   promptDetail   core      core | strict，strict 额外注入英文处理与引用规范
+#   promptOrder    15000     prompt 段落排序（内置段落最大 10200）
+#   guideTool      true      是否注册 zh_writing_guide（规范查询）
+#   styleCheckTool true      是否注册 zh_style_check（排版自检）
+#   check:
+#     maxFindings  200       单次自检最多收集多少条
+#     reportLimit  40        报告里最多列出多少条
+#     disabledRules []       要关闭的规则 id，如 [spacing-cjk-digit]
+- insert:
+    - id: zh-writing-guide
+      name: '@local/dsh-zh-writing-guide'
+      config:
+        promptSection: true
+        promptDetail: core
+        guideTool: true
+        styleCheckTool: true
