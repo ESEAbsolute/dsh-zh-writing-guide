@@ -7,7 +7,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { apply, normalizeConfig } from '../index.js';
+import { apply, normalizeConfig, readConfig } from '../index.js';
 import {
   buildGuideText,
   DEFAULT_PREFERENCES,
@@ -20,9 +20,16 @@ import {
 import { buildPromptSection } from '../lib/prompt.js';
 import { CHECK_RULE_IDS, checkText, renderCheckReport } from '../lib/check.js';
 
-/** 记录注册行为的最小 ctx 替身。 */
+/** 记录注册行为的最小 ctx 替身；注销函数会真的把注册项摘掉，便于测热更新。 */
 function fakeCtx() {
-  const recorded = { sections: [], tools: [], effects: 0, injected: [] };
+  const recorded = {
+    sections: [],
+    tools: [],
+    effects: 0,
+    injected: [],
+    listeners: new Map(),
+    presentations: [],
+  };
   const scoped = {
     effect(factory, label) {
       recorded.effects += 1;
@@ -33,22 +40,39 @@ function fakeCtx() {
     tools: {
       register(definition) {
         recorded.tools.push(definition);
+        return () => {
+          const index = recorded.tools.indexOf(definition);
+          if (index >= 0) recorded.tools.splice(index, 1);
+        };
+      },
+    },
+    settings: {
+      configure(presentation, owner) {
+        recorded.presentations.push({ presentation, owner });
         return () => {};
       },
     },
   };
   return {
     recorded,
+    fiber: { id: 'zh-writing-guide' },
     effect(factory, label) {
       recorded.effects += 1;
       const dispose = factory();
       assert.equal(typeof dispose, 'function', `effect ${label} 必须返回 disposer`);
       return dispose;
     },
+    on(event, handler) {
+      recorded.listeners.set(event, handler);
+      return () => {};
+    },
     systemPrompt: {
       section(section) {
         recorded.sections.push(section);
-        return () => {};
+        return () => {
+          const index = recorded.sections.indexOf(section);
+          if (index >= 0) recorded.sections.splice(index, 1);
+        };
       },
     },
     inject(deps, callback) {
@@ -57,6 +81,51 @@ function fakeCtx() {
       return { dispose() {} };
     },
   };
+}
+
+/** 造一个 Loader 风格的活引用：只有 `get` 一个自有键，值由外部变量决定。 */
+function volatileRef(holder) {
+  return { get: () => holder.value };
+}
+
+/** 模拟 Loader 提交 volatile 更新：先换值，再通知本行。 */
+function commitVolatile(ctx, holder, next) {
+  holder.value = next;
+  ctx.recorded.listeners.get('loader/volatile-update')?.();
+}
+
+/**
+ * 从 cordis.patch.yml 里读出 `config:` 段。只覆盖本文件用到的形状：
+ * 一层 `key: value` 与一层「`key:` + 缩进子项」，够核对字段名与类型。
+ * @param {string} text patch 文件全文
+ * @returns {Record<string, unknown>} config 段
+ */
+function readPatchConfig(text) {
+  const lines = text.split('\n');
+  const start = lines.findIndex((line) => /^\s*config:\s*$/.test(line));
+  assert.ok(start >= 0, 'patch 里应当有 config: 段');
+  const baseIndent = lines[start].search(/\S/);
+  const root = {};
+  let current = root;
+  let childIndent = -1;
+  for (let index = start + 1; index < lines.length; index += 1) {
+    const line = lines[index];
+    if (line.trim() === '' || line.trimStart().startsWith('#')) continue;
+    const indent = line.search(/\S/);
+    if (indent <= baseIndent) break;
+    const match = /^([\w-]+):\s*(.*)$/.exec(line.trim());
+    if (match === null) continue;
+    if (match[2] === '') {
+      const child = {};
+      root[match[1]] = child;
+      current = child;
+      childIndent = indent;
+      continue;
+    }
+    if (childIndent !== -1 && indent <= childIndent) current = root;
+    current[match[1]] = match[2] === 'true' ? true : match[2] === 'false' ? false : match[2];
+  }
+  return root;
 }
 
 test('规范数据集自洽：id 唯一、来源合法、规则非空', () => {
@@ -267,13 +336,133 @@ test('关闭开关后不再注册对应能力', () => {
   apply(ctx, { promptSection: false, guideTool: false, styleCheckTool: false });
   assert.equal(ctx.recorded.sections.length, 0);
   assert.equal(ctx.recorded.tools.length, 0);
-  assert.equal(ctx.recorded.injected.length, 0);
+  // tools 服务始终等待：配置页里再打开开关时不必重挂插件，当场就能注册。
+  assert.ok(ctx.recorded.injected.some((deps) => deps.includes('tools')));
 
   const only = fakeCtx();
   apply(only, { guideTool: false });
   assert.equal(only.recorded.tools.length, 1);
   assert.equal(only.recorded.tools[0].name, 'zh_style_check');
+
+  // 关掉之后再打开，同样只在 volatile 更新时对账
+  const holder = { value: { guideTool: false, styleCheckTool: false } };
+  const live = fakeCtx();
+  apply(live, volatileRef(holder));
+  assert.equal(live.recorded.tools.length, 0);
+  commitVolatile(live, holder, { guideTool: true, styleCheckTool: true });
+  assert.deepEqual(live.recorded.tools.map((tool) => tool.name), ['zh_writing_guide', 'zh_style_check']);
 });
+
+test('每次 apply 都声明本插件自带配置页', () => {
+  const ctx = fakeCtx();
+  apply(ctx, {});
+  assert.deepEqual(ctx.recorded.injected, [['tools'], ['settings']]);
+  assert.equal(ctx.recorded.presentations.length, 1);
+  assert.deepEqual(ctx.recorded.presentations[0].presentation, { auto: false });
+  assert.equal(ctx.recorded.presentations[0].owner, ctx.fiber, '策略要挂在本行 fiber 上');
+});
+
+test('活引用：normalizeConfig 直接吃 Loader 的 volatile 引用', () => {
+  const holder = { value: { promptDetail: 'strict', preferences: { cornerQuotes: false } } };
+  const ref = volatileRef(holder);
+
+  assert.deepEqual(readConfig(ref), holder.value);
+  const live = normalizeConfig(ref);
+  assert.equal(live.promptDetail, 'strict');
+  assert.equal(live.preferences.cornerQuotes, false);
+
+  holder.value = { promptDetail: 'core', preferences: { cornerQuotes: true } };
+  const after = normalizeConfig(ref);
+  assert.equal(after.promptDetail, 'core', '每次读取都要取到最新值');
+  assert.equal(after.preferences.cornerQuotes, true);
+
+  // 普通对象与嵌套引用同样要认
+  assert.deepEqual(readConfig(undefined), {});
+  assert.equal(normalizeConfig({ get: () => ({ get: () => ({ guideTool: false }) }) }).guideTool, false);
+});
+
+test('热更新：改配置后段落与工具当场对账，不需要重挂插件', async () => {
+  const holder = { value: {} };
+  const ctx = fakeCtx();
+  apply(ctx, volatileRef(holder));
+  assert.equal(ctx.recorded.sections.length, 1);
+  assert.deepEqual(ctx.recorded.tools.map((tool) => tool.name), ['zh_writing_guide', 'zh_style_check']);
+
+  // 关段落 + 关查询工具
+  commitVolatile(ctx, holder, { promptSection: false, guideTool: false });
+  assert.equal(ctx.recorded.sections.length, 0, '段落应当注销');
+  assert.deepEqual(ctx.recorded.tools.map((tool) => tool.name), ['zh_style_check']);
+
+  // 段落重开、换排序、关掉自检工具：段落要按新 order 重新注册
+  commitVolatile(ctx, holder, { promptSection: true, promptOrder: 1, styleCheckTool: false });
+  assert.equal(ctx.recorded.sections.length, 1);
+  assert.equal(ctx.recorded.sections[0].order, 1);
+  assert.deepEqual(ctx.recorded.tools.map((tool) => tool.name), ['zh_writing_guide']);
+
+  // 值型字段不必重注册，读取时生效
+  commitVolatile(ctx, holder, { promptSection: true, promptOrder: 1, styleCheckTool: false, promptDetail: 'strict' });
+  assert.equal(ctx.recorded.sections.length, 1);
+  assert.ok(ctx.recorded.sections[0].text().includes('U.S.A.'), 'strict 段落的英文条目应出现在最新的 text() 里');
+
+  // 个人约定改了，工具返回值立刻跟着变
+  commitVolatile(ctx, holder, { guideTool: true, preferences: { cornerQuotes: false } });
+  const [guide] = ctx.recorded.tools;
+  const index = await guide.execute({});
+  assert.ok(index.text.includes('已关闭：cornerQuotes（punct-quotes）'), index.text.slice(0, 300));
+});
+
+test('导出 schemastery Config：整棵 volatile，所有可调项都在 schema 里', async () => {
+  const { Config } = await import('../index.js');
+  assert.ok(Config, 'schemastery 可解析时必须导出 Config');
+  assert.equal(Config.meta.volatile, true, '根节点标 volatile，设置页才能把整行当活配置');
+  assert.equal(Config.type, 'object');
+
+  const resolved = Config['~standard'].validate({}).value.get();
+  assert.deepEqual(resolved, {
+    promptSection: true,
+    promptDetail: 'core',
+    promptOrder: 15000,
+    guideTool: true,
+    styleCheckTool: true,
+    preferences: { cjkDigitSpacing: true, linkSpacing: true, cornerQuotes: true },
+    check: { maxFindings: 200, reportLimit: 40, disabledRules: [] },
+  }, 'schema 默认值要与文档一致');
+
+  const bad = Config['~standard'].validate({ promptDetail: '宽松' });
+  assert.ok(bad.issues?.length > 0, '非法枚举要报错');
+  const custom = Config['~standard'].validate({
+    promptDetail: 'strict', promptOrder: 7, preferences: { linkSpacing: false }, check: { disabledRules: ['spacing-digit-unit'] },
+  }).value.get();
+  assert.equal(custom.promptDetail, 'strict');
+  assert.equal(custom.promptOrder, 7);
+  assert.equal(custom.preferences.linkSpacing, false);
+  assert.equal(custom.preferences.cornerQuotes, true, '未给的字段回落默认值');
+  assert.deepEqual(custom.check.disabledRules, ['spacing-digit-unit']);
+});
+
+test('cordis.patch.yml 里的 config 字段都是 schema 认得的', async () => {
+  const { readFile } = await import('node:fs/promises');
+  const { Config } = await import('../index.js');
+  const text = await readFile(new URL('../cordis.patch.yml', import.meta.url), 'utf8');
+  const config = readPatchConfig(text);
+
+  const declared = new Set(Object.keys(Config.dict));
+  const topLevel = Object.keys(config);
+  assert.ok(topLevel.length > 0, '应当从 patch 里读到 config 段');
+  for (const [key, value] of Object.entries(config)) {
+    assert.ok(declared.has(key), `cordis.patch.yml 的 ${key} 不在 schema 里`);
+    if (value !== null && typeof value === 'object') {
+      const nested = new Set(Object.keys(Config.dict[key].dict ?? {}));
+      for (const child of Object.keys(value)) {
+        assert.ok(nested.has(child), `cordis.patch.yml 的 ${key}.${child} 不在 schema 里`);
+      }
+    }
+  }
+
+  const issues = Config['~standard'].validate(config).issues;
+  assert.equal(issues, undefined, `patch 里的 config 必须能通过校验：${JSON.stringify(issues)}`);
+});
+
 
 test('规范查询：目录、主题、关键词三条路径', () => {
   const index = buildGuideText();
@@ -317,6 +506,15 @@ test('自检：全角数字、重复标点、省略号、降低 N 倍', () => {
   assert.ok(rules.has('punct-repeat'));
   assert.ok(rules.has('punct-ellipsis'));
   assert.ok(rules.has('number-change-multiple'));
+});
+
+test('自检：省略号只认两个字符的 ……', () => {
+  const rulesOf = (text) => new Set(checkText(text).findings.map((finding) => finding.rule));
+  assert.ok(!rulesOf('就这样……继续。').has('punct-ellipsis'), '规范的 …… 不应报告');
+  assert.ok(!rulesOf('「……」也算正确写法。').has('punct-ellipsis'), '引号里的 …… 同样不应报告');
+  for (const bad of ['就这样…', '就这样………', '就这样...', '就这样⋯']) {
+    assert.ok(rulesOf(bad).has('punct-ellipsis'), `${bad} 应报告 punct-ellipsis`);
+  }
 });
 
 test('自检：全角标点旁的冗余空格', () => {

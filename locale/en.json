@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "Chinese Writing Guide",
-    "description": "Injects the Chinese Copywriting Guidelines and the Chinese Technical Documentation Style Guide into the system prompt, and adds the zh_writing_guide and zh_style_check tools."
+    "description": "Injects the Chinese Copywriting Guidelines and the Chinese Technical Documentation Style Guide into the system prompt, adds the zh_writing_guide and zh_style_check tools, and exposes every switch on this row's configuration page."
   }
 }

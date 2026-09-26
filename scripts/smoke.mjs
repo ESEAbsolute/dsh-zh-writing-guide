@@ -63,3 +63,24 @@ const disabled = disabledPreferenceRules(ALL_OFF);
 console.log(
   renderCheckReport(checkText(SAMPLE, { disabledRules: disabled }), { offRules: disabled }),
 );
+
+const { Config, normalizeConfig, readConfig } = await import('../index.js');
+console.log('\n==================== 配置 schema ====================');
+if (Config === undefined) {
+  console.log('没有解析到 @deepseek-ai/schemastery：插件按 cordis.patch.yml 的静态配置工作，"插件"页不会出现配置表单。');
+} else {
+  console.log(`volatile 根节点：${Config.meta.volatile === true}（true 表示这一行的字段可以当场改，不重挂插件）`);
+  console.log('schema 默认值：');
+  console.log(JSON.stringify(Config['~standard'].validate({}).value.get(), null, 2));
+  console.log('归一化后的默认值：');
+  console.log(JSON.stringify(normalizeConfig(Config['~standard'].validate({}).value), null, 2));
+}
+// Loader 传进来的是活引用，这里用一个假引用确认读取路径。
+const holder = { value: { promptDetail: 'strict', guideTool: false } };
+console.log('活引用读取：', JSON.stringify(readConfig({ get: () => holder.value })));
+
+console.log('\n==================== 插件页配置入口 ====================');
+console.log('侧栏「插件」→ 已安装 → 中文写作规范 → 行「中文写作规范」右侧箭头，表单由 lib/client.js 注册到：');
+console.log('  plugins.row.config   key = @local/dsh-zh-writing-guide#zh-writing-guide');
+console.log('  plugins.bundle.config key = @local/dsh-zh-writing-guide（打开插件卡片即可看到）');
+console.log('两个入口都读写设置命名空间 "zh-writing-guide"，写入落在当前 profile 的 cordis.patch.yml。');

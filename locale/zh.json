@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "中文写作规范",
-    "description": "把《中文文案排版指北》与《中文技术文档的写作规范》注入 system prompt，并提供规范查询（zh_writing_guide）与排版自检（zh_style_check）工具。"
+    "description": "把《中文文案排版指北》与《中文技术文档的写作规范》注入 system prompt，提供规范查询（zh_writing_guide）与排版自检（zh_style_check）工具；各项开关在本行配置页里直接改。"
   }
 }

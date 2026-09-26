@@ -1,10 +1,14 @@
 # 中文写作规范 · bundle patch
 #
-# 这一层只做一件事：把 Host 插件行插进 Loader 条目列表。
-# 包本身没有任何 npm 依赖，也不导出 schemastery 的 Config，因此这里的
-# config 会原样传给 index.js 的 normalizeConfig()，非法值回落到默认值。
+# 这一层做两件事：把 Host 插件行插进 Loader 条目列表，并给出它的初始配置。
 #
-# 可调项（全部可选）：
+# index.js 导出了 schemastery 的 `Config`（整棵 `.volatile()`），所以这里的 config
+# 会先按 schema 校验、补齐默认值，再作为「活配置」交给插件：在 Web 端「插件」页
+# （侧栏「插件」→ 已安装 → 中文写作规范 → 行名右侧箭头）改任何一项都不重挂插件，
+# 改动写回当前 profile 的 cordis.patch.yml。schema 缺失时（旧部署）config 原样传给
+# normalizeConfig()，非法值回落到默认值。
+#
+# 可调项（全部可选，下列值就是 schema 默认值）：
 #   promptSection  true      是否注册 system prompt 段落
 #   promptDetail   core      core | strict，strict 额外注入英文处理与引用规范
 #   promptOrder    15000     prompt 段落排序（内置段落最大 10200）
