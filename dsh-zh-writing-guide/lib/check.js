@@ -52,6 +52,29 @@ const LATIN = /[A-Za-z]/;
 const DIGIT = /[0-9]/;
 const PUNCT = new Set([',', '.', ':', ';', '!', '?', '(', ')']);
 
+/**
+ * 全部可关闭的规则 id。规则 id 与 `lib/guidelines.js` 里的规范条目 id 保持同名，
+ * 这样 `preferences` 关闭个人约定时能直接映射到自检规则；单元测试会守住这条约束。
+ */
+export const CHECK_RULE_IDS = Object.freeze([
+  'spacing-cjk-latin',
+  'spacing-cjk-digit',
+  'spacing-digit-unit',
+  'spacing-link',
+  'spacing-fullwidth-punct',
+  'punct-fullwidth',
+  'punct-repeat',
+  'punct-ellipsis',
+  'punct-enumeration',
+  'punct-quotes',
+  'punct-line-start',
+  'punct-heading-end',
+  'width-fullwidth-digit',
+  'width-fullwidth-latin',
+  'number-change-multiple',
+  'sentence-too-long',
+]);
+
 /** 屏蔽非正文区域，保持字符串长度与换行位置不变，便于回算行列号。 */
 function maskProse(text) {
   let masked = text;
@@ -268,7 +291,7 @@ export function checkText(text, options = {}) {
   // ── 标点：简体中文使用直角引号 ─────────────────────────────────────
   // 只查弯双引号：弯单引号 ’ 与英文撇号同形，查它会大量误报。
   for (const match of masked.matchAll(/[“”]/g)) {
-    add('punct-quote-style', 'warn', match.index ?? 0, '使用了弯引号', '简体中文改用直角引号：外层「」，内层『』（个人约定）');
+    add('punct-quotes', 'warn', match.index ?? 0, '使用了弯引号', '简体中文改用直角引号：外层「」，内层『』（个人约定）');
   }
 
   // ── 数值：变化程度 ─────────────────────────────────────────────────
@@ -313,14 +336,20 @@ const LABEL = { error: 'error', warn: 'warn', info: 'info' };
 /**
  * 把自检结果渲染成给人（和模型）读的报告。
  * @param {{findings: Array<object>, scannedChars: number, maskedChars: number, truncated: boolean}} result
- * @param {{limit?: number}} [options]
+ * @param {{limit?: number, offRules?: readonly string[]}} [options]
+ *   `offRules` 是被配置关闭的自检规则 id，会在报告里点名，避免「通过」被误读成完全合规。
  * @returns {string}
  */
 export function renderCheckReport(result, options = {}) {
   const limit = options.limit ?? 40;
+  const offRules = [...new Set(options.offRules ?? [])];
+  const suffix = offRules.length > 0 ? `\n已按配置关闭：${offRules.join('、')}。` : '';
   const { findings } = result;
   if (findings.length === 0) {
-    return `中文排版自检通过：未发现可机械判定的问题（检查 ${result.scannedChars} 字符，已跳过 ${result.maskedChars} 字符的代码/链接区域）。`;
+    return (
+      `中文排版自检通过：未发现可机械判定的问题（检查 ${result.scannedChars} 字符，已跳过 ${result.maskedChars} 字符的代码/链接区域）。` +
+      suffix
+    );
   }
   const counts = { error: 0, warn: 0, info: 0 };
   for (const finding of findings) counts[finding.severity] = (counts[finding.severity] ?? 0) + 1;
@@ -339,5 +368,6 @@ export function renderCheckReport(result, options = {}) {
     lines.push('');
   });
   if (findings.length > shown.length) lines.push(`（其余 ${findings.length - shown.length} 处已省略）`);
+  if (offRules.length > 0) lines.push(`已按配置关闭：${offRules.join('、')}。`);
   return lines.join('\n').trimEnd();
 }

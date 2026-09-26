@@ -13,20 +13,28 @@
 2. **`zh_writing_guide` 工具** —— 按主题或关键词取回完整条目、正误示例与注意事项，需要细节时才付 token。
 3. **`zh_style_check` 工具** —— 对成稿做可机械判定的排版自检，返回按行列定位的问题与修改建议。
 
-## 个人约定（本插件选定口径）
+## 个人约定（可配置，默认全开）
 
 上游规范把下面三项列为**可选项或争议项**，本插件按使用者的个人习惯把它们定死为规则。
-实现上写在 `PREFERENCES`（`lib/guidelines.js`）里，三条规则都带 `preference: true`，
-规范查询会显式标注「个人约定」，单元测试保证两者不会漂移。
+三项都做成了独立的配置开关，**默认全部开启**；关掉任意一项时，插件会回落到上游口径而不是简单删除内容：
 
-| 规则 id | 约定 | 上游口径 |
-| --- | --- | --- |
-| `spacing-cjk-digit` | 中文和数字之间**要**加空格，不加即判为 `error` | 指北要求加；写作规范允许全文统一地不加 |
-| `spacing-link` | 超链接前后**应当**增加空格 | 两份规范都列为个人风格 |
-| `punct-quotes` | 简体中文**应当**使用直角引号「」『』，不用弯引号 | 上游把直角引号列为争议项 |
+| 配置键 | 默认 | 规范条目 / 自检规则 | 开启时 | 关闭时 |
+| --- | --- | --- | --- | --- |
+| `cjkDigitSpacing` | `true` | `spacing-cjk-digit` | 中文和数字之间一律加空格，不加即 `error` | 换回「加不加都可，但全文必须统一」，自检静默 |
+| `linkSpacing` | `true` | `spacing-link` | 超链接两侧各加一个空格 | 换回「属个人风格，两种写法都正确」，自检静默 |
+| `cornerQuotes` | `true` | `punct-quotes` | 简体中文用直角引号「」『』 | 换回「弯引号与直角引号都合法，但须全文统一」，自检静默 |
 
-想让某一项回到上游的可选口径，用 `check.disabledRules` 关掉对应的自检规则即可；
-prompt 段落里的文字改动需要直接改 `lib/prompt.js`。
+关闭一项会同时作用于三处，且互相一致：
+
+1. **system prompt 段落** —— 对应条目整体不再出现（上游本来就允许另一种写法，不必每轮占用 token）；
+   三项全关时段落会明确写「本部署未启用个人约定，完全按两份上游规范的原始口径执行」。
+2. **`zh_writing_guide`** —— 规则正文、正误示例与注意事项换成上游口径，目录里点名「已关闭」。
+3. **`zh_style_check`** —— 同名规则不再报告，并在报告末尾写明「已按配置关闭：…」，
+   避免「自检通过」被误读成完全合规。
+
+实现上写在 `PREFERENCES`（`lib/guidelines.js`）：每条约定带 `key`、`ruleId`（与规范条目、自检规则同名）
+以及 `whenOff` 覆盖文案；单元测试会守住「规范条目 id == 自检规则 id」这条约束——
+之前正是这里出过一次真 bug（规范条目叫 `punct-quotes`、自检规则叫 `punct-quote-style`，导致关闭开关时自检静默失效）。
 
 ## 安装
 
@@ -57,10 +65,23 @@ prompt 段落里的文字改动需要直接改 `lib/prompt.js`。
     promptOrder: 15000       # 段落排序，内置段落最大值为 10200，故默认排在最后
     guideTool: true          # 是否注册 zh_writing_guide
     styleCheckTool: true     # 是否注册 zh_style_check
+    preferences:             # 三条个人约定，默认全开；false 即回落到上游口径
+      cjkDigitSpacing: true  # 中文和数字之间应当增加空格
+      linkSpacing: true      # 超链接两侧应当增加空格
+      cornerQuotes: true     # 简体中文应当使用直角引号
     check:
       maxFindings: 200       # 单次自检最多收集多少条
       reportLimit: 40        # 报告里最多列出多少条
-      disabledRules: []      # 关闭指定规则，例如 [spacing-cjk-digit, spacing-digit-unit]
+      disabledRules: []      # 额外关闭的规则，例如 [spacing-digit-unit]
+```
+
+只想关掉其中一项时的最简写法：
+
+```yaml
+- id: zh-writing-guide
+  config:
+    preferences:
+      cornerQuotes: false    # 弯引号与直角引号都用，仅要求全文统一
 ```
 
 > 本包**不导出 schemastery 的 `Config`**：profile 的 `node_modules` 里没有 `@deepseek-ai/schemastery`
@@ -93,7 +114,7 @@ prompt 段落里的文字改动需要直接改 `lib/prompt.js`。
 | `punct-repeat` | error | 重复标点（`！！`、`？？`、`！？`、`。。`） |
 | `punct-ellipsis` | error | `...`、`。。。` 或只写一个 `…` |
 | `punct-enumeration` | warn | 英文并列词之间使用全角逗号 |
-| `punct-quote-style` | warn | 使用弯引号（**个人约定**：改用直角引号 `「」『』`）；不查弯单引号，避免与英文撇号冲突 |
+| `punct-quotes` | warn | 使用弯引号（**个人约定**：改用直角引号 `「」『』`）；不查弯单引号，避免与英文撇号冲突 |
 | `punct-line-start` | warn | 点号出现在行首 |
 | `punct-heading-end` | warn | 标题末尾出现点号 |
 | `width-fullwidth-digit` | error | 使用全角阿拉伯数字 |
@@ -108,7 +129,7 @@ prompt 段落里的文字改动需要直接改 `lib/prompt.js`。
 ## 开发与验证
 
 ```bash
-node --test dsh-zh-writing-guide/test/plugin.test.mjs   # 20 个单元测试，不依赖 DSH 运行时
+node --test dsh-zh-writing-guide/test/plugin.test.mjs   # 25 个单元测试，不依赖 DSH 运行时
 node dsh-zh-writing-guide/scripts/smoke.mjs             # 打印 prompt 段落、查询输出与自检报告
 ```
 

@@ -8,9 +8,17 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import { apply, normalizeConfig } from '../index.js';
-import { buildGuideText, PREFERENCES, RULES_BY_ID, TOPICS, TOPIC_BY_ID } from '../lib/guidelines.js';
+import {
+  buildGuideText,
+  DEFAULT_PREFERENCES,
+  disabledPreferenceRules,
+  PREFERENCES,
+  RULES_BY_ID,
+  TOPICS,
+  TOPIC_BY_ID,
+} from '../lib/guidelines.js';
 import { buildPromptSection } from '../lib/prompt.js';
-import { checkText, renderCheckReport } from '../lib/check.js';
+import { CHECK_RULE_IDS, checkText, renderCheckReport } from '../lib/check.js';
 
 /** 记录注册行为的最小 ctx 替身。 */
 function fakeCtx() {
@@ -77,6 +85,28 @@ test('个人约定与规范数据一一对应', () => {
   assert.equal(marked.length, PREFERENCES.length, '被标记的规则数应与个人约定数一致');
 });
 
+test('个人约定的规则 id 必须同时是规范条目 id 与自检规则 id', () => {
+  // 这条断言防住过一类真 bug：规范条目叫 punct-quotes、自检规则叫 punct-quote-style，
+  // 结果关闭个人约定时自检规则并没有被关掉。
+  assert.deepEqual(
+    Object.keys(DEFAULT_PREFERENCES).sort(),
+    PREFERENCES.map((entry) => entry.key).sort(),
+  );
+  for (const preference of PREFERENCES) {
+    assert.ok(RULES_BY_ID.has(preference.ruleId), `规范数据里没有 ${preference.ruleId}`);
+    assert.ok(
+      CHECK_RULE_IDS.includes(preference.ruleId),
+      `自检规则里没有 ${preference.ruleId}，关闭个人约定时会静默失效`,
+    );
+    assert.equal(typeof preference.whenOff?.rule, 'string', `${preference.ruleId} 缺少 whenOff.rule`);
+  }
+  assert.deepEqual(disabledPreferenceRules({}), []);
+  assert.deepEqual(
+    disabledPreferenceRules({ cjkDigitSpacing: false, linkSpacing: true, cornerQuotes: false }).sort(),
+    ['punct-quotes', 'spacing-cjk-digit'],
+  );
+});
+
 test('工具参数 schema 落在 Harness 支持的 JSON Schema 子集内', () => {
   const ctx = fakeCtx();
   apply(ctx, {});
@@ -124,6 +154,38 @@ test('prompt 段落包含核心约束且不含全量条目', () => {
   assert.ok(strict.includes('U.S.A.'));
 });
 
+test('个人约定默认全部开启，prompt 里三项都在', () => {
+  const core = buildPromptSection();
+  assert.ok(core.includes('中文与数字之间一律加一个半角空格'));
+  assert.ok(core.includes('链接锚文本与相邻中文之间各加一个空格'));
+  assert.ok(core.includes('简体中文用直角引号'));
+  assert.ok(core.includes('本部署启用的个人约定'));
+});
+
+test('逐项关闭个人约定：prompt 条目消失，且不影响其他条', () => {
+  const digitOff = buildPromptSection({ preferences: { cjkDigitSpacing: false } });
+  assert.ok(!digitOff.includes('中文与数字之间一律加一个半角空格'), '数字条目应消失');
+  assert.ok(digitOff.includes('中文与英文之间一律加一个半角空格'), '中英文条目应保留');
+  assert.ok(digitOff.includes('链接锚文本与相邻中文之间各加一个空格'), '其他个人约定应保留');
+
+  const linkOff = buildPromptSection({ preferences: { linkSpacing: false } });
+  assert.ok(!linkOff.includes('链接锚文本与相邻中文之间各加一个空格'));
+  assert.ok(linkOff.includes('中文与数字之间一律加一个半角空格'));
+
+  const quoteOff = buildPromptSection({ preferences: { cornerQuotes: false } });
+  assert.ok(!quoteOff.includes('简体中文用直角引号'));
+  assert.ok(quoteOff.includes('不重复使用标点'), '同组的非个人约定条目应保留');
+});
+
+test('全部关闭个人约定时 prompt 明确说明回落上游口径', () => {
+  const core = buildPromptSection({
+    preferences: { cjkDigitSpacing: false, linkSpacing: false, cornerQuotes: false },
+  });
+  assert.ok(core.includes('本部署未启用个人约定'));
+  assert.ok(!core.includes('本部署启用的个人约定'));
+  assert.ok(core.includes('中文语句用全角标点'), '普通条目不受影响');
+});
+
 test('配置归一化：非法值回落，默认开启全部能力', () => {
   const defaults = normalizeConfig(undefined);
   assert.equal(defaults.promptSection, true);
@@ -131,6 +193,7 @@ test('配置归一化：非法值回落，默认开启全部能力', () => {
   assert.equal(defaults.promptOrder, 15000);
   assert.equal(defaults.guideTool, true);
   assert.equal(defaults.styleCheckTool, true);
+  assert.deepEqual(defaults.preferences, { cjkDigitSpacing: true, linkSpacing: true, cornerQuotes: true });
   assert.deepEqual(defaults.check.disabledRules, []);
 
   const custom = normalizeConfig({
@@ -138,14 +201,65 @@ test('配置归一化：非法值回落，默认开启全部能力', () => {
     promptDetail: 'strict',
     promptOrder: 30,
     guideTool: 'yes',
+    preferences: { linkSpacing: false, cornerQuotes: 'no', 未知项: false },
     check: { disabledRules: ['spacing-cjk-digit', 42], maxFindings: Number.NaN },
   });
   assert.equal(custom.promptSection, false);
   assert.equal(custom.promptDetail, 'strict');
   assert.equal(custom.promptOrder, 30);
   assert.equal(custom.guideTool, true, '非布尔值回落为默认 true');
+  assert.deepEqual(custom.preferences, { cjkDigitSpacing: true, linkSpacing: false, cornerQuotes: true });
   assert.deepEqual(custom.check.disabledRules, ['spacing-cjk-digit']);
   assert.equal(custom.check.maxFindings, 200);
+});
+
+test('个人约定贯通到两个工具：关闭后查询与自检同步生效', async () => {
+  const off = fakeCtx();
+  apply(off, { preferences: { cjkDigitSpacing: false, linkSpacing: false, cornerQuotes: false } });
+  const [offGuide, offCheck] = off.recorded.tools;
+
+  // prompt 段落
+  const prompt = off.recorded.sections[0].text();
+  assert.ok(prompt.includes('本部署未启用个人约定'));
+  assert.ok(!prompt.includes('链接锚文本与相邻中文之间各加一个空格'));
+
+  // 规范目录点名已关闭项
+  const index = await offGuide.execute({});
+  assert.ok(index.text.includes('已关闭：cjkDigitSpacing（spacing-cjk-digit）'), index.text.slice(0, 400));
+  assert.ok(index.text.includes('个人约定：全部关闭'));
+
+  // 条目换回上游口径，且不再标注「个人约定」
+  const spacing = await offGuide.execute({ topic: 'spacing' });
+  assert.ok(spacing.text.includes('加不加半角空格都可以'));
+  assert.ok(spacing.text.includes('属个人风格，两种写法都正确'));
+  assert.ok(!spacing.text.includes('口径：个人约定'));
+
+  const punct = await offGuide.execute({ topic: 'punctuation' });
+  assert.ok(punct.text.includes('引号内再用引号时外层双引号、内层单引号'));
+  assert.ok(!punct.text.includes('不使用弯引号'));
+
+  // 自检：三条规则全部静默，并在报告里点名（点名行本身含规则 id，所以要匹配条目格式）
+  const report = await offCheck.execute({
+    text: '这是2011年发布的版本，请[提交一个 issue](#)并分配，他认为核心是“友好”。',
+  });
+  for (const rule of ['spacing-cjk-digit', 'spacing-link', 'punct-quotes']) {
+    assert.ok(!report.text.includes(`] ${rule} ·`), `不应报出 ${rule}：${report.text}`);
+  }
+  assert.ok(
+    report.text.includes('已按配置关闭：spacing-cjk-digit、spacing-link、punct-quotes'),
+    report.text,
+  );
+
+  // 同样的文本，默认（全开）时报出三条规则
+  const on = fakeCtx();
+  apply(on, {});
+  const [, onCheck] = on.recorded.tools;
+  const onReport = await onCheck.execute({
+    text: '这是2011年发布的版本，请[提交一个 issue](#)并分配，他认为核心是“友好”。',
+  });
+  for (const rule of ['spacing-cjk-digit', 'spacing-link', 'punct-quotes']) {
+    assert.ok(onReport.text.includes(rule), `默认应报出 ${rule}`);
+  }
 });
 
 test('关闭开关后不再注册对应能力', () => {
@@ -242,14 +356,14 @@ test('自检：链接锚文本与相邻中文的空格（个人约定）', () =>
 
 test('自检：简体中文使用直角引号（个人约定）', () => {
   const curly = checkText('他认为客户服务的核心是“友好”和“专业”。');
-  const hits = curly.findings.filter((finding) => finding.rule === 'punct-quote-style');
+  const hits = curly.findings.filter((finding) => finding.rule === 'punct-quotes');
   assert.equal(hits.length, 4, `两对弯引号共四处，实际 ${hits.length}`);
 
   const corner = checkText('他认为客户服务的核心是「友好」和「专业」。');
-  assert.ok(!corner.findings.some((finding) => finding.rule === 'punct-quote-style'), '直角引号不应报告');
+  assert.ok(!corner.findings.some((finding) => finding.rule === 'punct-quotes'), '直角引号不应报告');
 
   const apostrophe = checkText('One man’s constant is another man’s variable。');
-  assert.ok(!apostrophe.findings.some((finding) => finding.rule === 'punct-quote-style'), '英文撇号不是弯引号问题');
+  assert.ok(!apostrophe.findings.some((finding) => finding.rule === 'punct-quotes'), '英文撇号不是弯引号问题');
 });
 
 test('自检：命中全角标点、单位空格与长句', () => {

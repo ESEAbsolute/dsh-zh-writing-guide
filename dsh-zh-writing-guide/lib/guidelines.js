@@ -38,7 +38,7 @@ export const TOPICS = [
     id: 'spacing',
     title: '空格与字间距',
     sources: ['copywriting', 'docs'],
-    summary: '中文与英文、数字之间加半角空格；数字与单位之间加空格；链接前后加空格；全角标点前后不加空格。',
+    summary: '中文与英文、数字之间的空格；数字与单位之间的空格；链接两侧的空格；全角标点前后不加空格。',
     rules: [
       {
         id: 'spacing-cjk-latin',
@@ -521,38 +521,127 @@ export const RULES_BY_ID = new Map(
 export const RULE_COUNT = TOPICS.reduce((total, topic) => total + topic.rules.length, 0);
 
 /**
- * 本插件选定口径的个人约定：上游规范把它列为可选项或争议项，这里定死为规则。
- * @type {ReadonlyArray<{ruleId: string, title: string, decided: string}>}
+ * 三条可配置的个人约定。上游规范把它们列为可选项或争议项，本插件默认按个人约定
+ * 定死为规则；对应配置项置为 `false` 时回落到上游口径（`whenOff` 覆盖规则正文），
+ * 并且自检里的同名规则关闭。
+ *
+ * @type {ReadonlyArray<{
+ *   key: string, ruleId: string, title: string, decided: string, upstream: string,
+ *   whenOff: { rule: string, right: readonly string[], wrong: readonly string[], notes: readonly string[] },
+ * }>}
  */
 export const PREFERENCES = Object.freeze([
   {
+    key: 'cjkDigitSpacing',
     ruleId: 'spacing-cjk-digit',
-    title: '中文和数字之间要加空格',
-    decided: '一律加半角空格，不加即判为错误（上游《中文技术文档的写作规范》允许全文统一地不加）。',
+    title: '中文和数字之间应当增加空格',
+    decided: '一律加半角空格，不加即判为错误。',
+    upstream: '《中文技术文档的写作规范》允许全文统一地不加，只要同一文档内风格一致。',
+    whenOff: {
+      rule: '全角中文字符与半角阿拉伯数字之间，加不加半角空格都可以，但必须保证风格统一，不能两种风格混杂。',
+      right: [
+        '2011年5月15日，我订购了5台笔记本电脑与10台平板电脑。',
+        '2011 年 5 月 15 日，我订购了 5 台笔记本电脑与 10 台平板电脑。',
+      ],
+      wrong: ['2011年5月15日，我订购了 5 台笔记本电脑。（同一文档内两种风格混杂）'],
+      notes: ['个人约定已关闭，回落到《中文技术文档的写作规范》的口径：加不加都可，但全文必须统一。'],
+    },
   },
   {
+    key: 'linkSpacing',
     ruleId: 'spacing-link',
-    title: '超链接之间应当增加空格',
-    decided: '链接锚文本与相邻中文之间各加一个半角空格（上游列为个人风格）。',
+    title: '超链接两侧应当增加空格',
+    decided: '链接锚文本与相邻中文之间各加一个半角空格。',
+    upstream: '两份上游规范都把它列为个人风格，遵循与否语法上都正确。',
+    whenOff: {
+      rule: '链接锚文本与相邻中文之间是否加空格属个人风格，两种写法都正确，但同一文档内应保持一致。',
+      right: ['请[提交一个 issue](#)并分配给相关同事。', '请 [提交一个 issue](#) 并分配给相关同事。'],
+      wrong: [],
+      notes: ['个人约定已关闭，回落到两份上游规范的原始口径：这是风格选择，不是错误。'],
+    },
   },
   {
+    key: 'cornerQuotes',
     ruleId: 'punct-quotes',
     title: '简体中文应当使用直角引号',
     decided: '外层「」，内层『』，不使用弯引号（“ ”‘ ’）。',
+    upstream: '《中文文案排版指北》把直角引号列为争议项，弯引号同样合法。',
+    whenOff: {
+      rule: '引用使用全角双引号（“ ”），引号内再用引号时外层双引号、内层单引号（‘ ’）；简体中文也常用直角引号「」『』，但同一份文稿内必须统一。',
+      right: [
+        '许多人都认为客户服务的核心是“友好”和“专业”。',
+        '他认为客户服务的核心是「友好」和「专业」。（直角引号同样合法，但须全文统一）',
+      ],
+      wrong: [],
+      notes: ['个人约定已关闭，回落到《中文文案排版指北》的口径：弯引号与直角引号都合法，关键是在同一份文稿里保持一致。'],
+    },
   },
 ]);
 
+/** 三条个人约定的默认值：全部开启。 */
+export const DEFAULT_PREFERENCES = Object.freeze(
+  Object.fromEntries(PREFERENCES.map((entry) => [entry.key, true])),
+);
+
+/** 按 key 索引的个人约定。 */
+export const PREFERENCE_BY_KEY = new Map(PREFERENCES.map((entry) => [entry.key, entry]));
+
+/**
+ * 归一化个人约定配置：未知键忽略，非布尔值回落到默认 `true`。
+ * @param {unknown} raw
+ * @returns {Record<string, boolean>}
+ */
+export function normalizePreferences(raw) {
+  const input = raw !== null && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
+  const result = {};
+  for (const entry of PREFERENCES) {
+    result[entry.key] = typeof input[entry.key] === 'boolean' ? input[entry.key] : true;
+  }
+  return result;
+}
+
+/** 当前被关闭的个人约定所对应的自检规则 id。 */
+export function disabledPreferenceRules(preferences) {
+  const normalized = normalizePreferences(preferences);
+  return PREFERENCES.filter((entry) => normalized[entry.key] === false).map((entry) => entry.ruleId);
+}
+
+/** 当前启用的个人约定。 */
+export function activePreferences(preferences) {
+  const normalized = normalizePreferences(preferences);
+  return PREFERENCES.filter((entry) => normalized[entry.key] !== false);
+}
+
+/**
+ * 按当前配置解析一条规则：个人约定关闭时用 `whenOff` 覆盖正文与示例，
+ * 并去掉 `preference` 标记，避免规范查询里出现误导性的「个人约定」标注。
+ * @param {object} rule 规范数据里的原始规则
+ * @param {ReadonlySet<string>} disabledRuleIds 已被关闭的自检规则 id
+ */
+function resolveRule(rule, disabledRuleIds) {
+  if (rule.preference !== true || !disabledRuleIds.has(rule.id)) return rule;
+  const entry = PREFERENCES.find((candidate) => candidate.ruleId === rule.id);
+  if (entry === undefined) return rule;
+  const { preference: _ignored, ...rest } = rule;
+  return { ...rest, ...entry.whenOff, preference: false };
+}
+
 /** 全部主题与规则的紧凑目录，用于无参数查询。 */
-export function renderIndex() {
-  const lines = [
-    `# 中文写作规范 · 目录（共 ${TOPICS.length} 个主题 / ${RULE_COUNT} 条规则）`,
-    '',
-    '## 本插件的个人约定（已覆盖上游规范的可选项与争议项）',
-  ];
-  for (const preference of PREFERENCES) {
-    lines.push(`- ${preference.ruleId}（${preference.title}）：${preference.decided}`);
+export function renderIndex(preferences) {
+  const active = activePreferences(preferences);
+  const lines = [`# 中文写作规范 · 目录（共 ${TOPICS.length} 个主题 / ${RULE_COUNT} 条规则）`, ''];
+  if (active.length > 0) {
+    lines.push('## 当前生效的个人约定（已覆盖上游规范的可选项与争议项）');
+    for (const entry of active) lines.push(`- ${entry.ruleId}（${entry.title}）：${entry.decided}`);
+  } else {
+    lines.push('## 个人约定：全部关闭，完全按两份上游规范的原始口径执行');
   }
   lines.push('');
+  const off = PREFERENCES.filter((entry) => !active.includes(entry));
+  if (off.length > 0) {
+    lines.push(`已关闭：${off.map((entry) => `${entry.key}（${entry.ruleId}）`).join('、')}`);
+    lines.push('');
+  }
   for (const topic of TOPICS) {
     const sources = topic.sources.map((id) => SOURCES[id].title).join(' + ');
     lines.push(`## ${topic.id} · ${topic.title}`);
@@ -565,11 +654,17 @@ export function renderIndex() {
   return lines.join('\n');
 }
 
-/** 渲染单条规则。 */
-function renderRule(rule, detail) {
+/**
+ * 渲染单条规则。
+ * @param {object} rawRule 规范数据里的原始规则
+ * @param {'summary'|'full'} detail
+ * @param {ReadonlySet<string>} disabledRuleIds 已被关闭的个人约定规则 id
+ */
+function renderRule(rawRule, detail, disabledRuleIds) {
+  const rule = resolveRule(rawRule, disabledRuleIds);
   const lines = [`### ${rule.id} · ${rule.title}`, `规则：${rule.rule}`];
   if (rule.preference === true) {
-    lines.push('口径：个人约定——上游规范把它列为可选或争议项，本插件定死为规则。');
+    lines.push('口径：个人约定——上游规范把它列为可选或争议项，本插件定死为规则（可用 preferences 配置关闭）。');
   }
   if (detail === 'full') {
     if (rule.right?.length) {
@@ -590,19 +685,19 @@ function renderRule(rule, detail) {
 }
 
 /** 渲染一个主题的全部规则。 */
-function renderTopic(topic, detail) {
+function renderTopic(topic, detail, disabledRuleIds) {
   const lines = [
     `# ${topic.title}（topic: ${topic.id}）`,
     `来源：${topic.sources.map((id) => `${SOURCES[id].title} ${SOURCES[id].repo}`).join('；')}`,
     `要点：${topic.summary}`,
     '',
   ];
-  for (const rule of topic.rules) lines.push(renderRule(rule, detail));
+  for (const rule of topic.rules) lines.push(renderRule(rule, detail, disabledRuleIds));
   return lines.join('\n').trimEnd();
 }
 
 /** 关键词检索：命中规则标题、规则正文、示例与备注。 */
-function searchRules(query, detail) {
+function searchRules(query, detail, disabledRuleIds) {
   const needle = query.trim().toLowerCase();
   if (needle === '') return '';
   const hits = [];
@@ -631,38 +726,40 @@ function searchRules(query, detail) {
       currentTopic = topic.id;
       lines.push(`## ${topic.title}（${topic.id}）`, '');
     }
-    lines.push(renderRule(rule, detail));
+    lines.push(renderRule(rule, detail, disabledRuleIds));
   }
   return lines.join('\n').trimEnd();
 }
 
 /**
  * 生成规范查询结果。
- * @param {{topic?: string, query?: string, detail?: string}} [request]
+ * @param {{topic?: string, query?: string, detail?: string, preferences?: unknown}} [request]
+ *   `preferences` 是个人约定开关；被关闭的那几条会换成上游口径的正文与示例。
  * @returns {{text: string, matched: number}}
  */
 export function buildGuideText(request = {}) {
   const detail = request.detail === 'summary' ? 'summary' : 'full';
   const topicId = typeof request.topic === 'string' ? request.topic.trim() : '';
   const query = typeof request.query === 'string' ? request.query : '';
+  const disabledRuleIds = new Set(disabledPreferenceRules(request.preferences));
 
   if (topicId !== '') {
     const topic = TOPIC_BY_ID.get(topicId);
     if (topic === undefined) {
       const ids = TOPICS.map((entry) => entry.id).join('、');
       return {
-        text: `未知主题 "${topicId}"。可用主题：${ids}。\n\n${renderIndex()}`,
+        text: `未知主题 "${topicId}"。可用主题：${ids}。\n\n${renderIndex(request.preferences)}`,
         matched: 0,
       };
     }
-    return { text: renderTopic(topic, detail), matched: topic.rules.length };
+    return { text: renderTopic(topic, detail, disabledRuleIds), matched: topic.rules.length };
   }
 
   if (query.trim() !== '') {
-    const text = searchRules(query, detail);
+    const text = searchRules(query, detail, disabledRuleIds);
     if (text === '') {
       return {
-        text: `没有规则命中「${query}」。可以换用更短的关键词，或先查看目录。\n\n${renderIndex()}`,
+        text: `没有规则命中「${query}」。可以换用更短的关键词，或先查看目录。\n\n${renderIndex(request.preferences)}`,
         matched: 0,
       };
     }
@@ -670,5 +767,5 @@ export function buildGuideText(request = {}) {
     return { text, matched };
   }
 
-  return { text: renderIndex(), matched: RULE_COUNT };
+  return { text: renderIndex(request.preferences), matched: RULE_COUNT };
 }

@@ -7,7 +7,7 @@
  * @module dsh-zh-writing-guide/prompt
  */
 
-import { PREFERENCES } from './guidelines.js';
+import { activePreferences, normalizePreferences } from './guidelines.js';
 
 /** 来源标注（进入 prompt，帮助模型在需要时追溯原文）。 */
 export const PROMPT_SOURCES =
@@ -16,15 +16,25 @@ export const PROMPT_SOURCES =
 
 /**
  * 核心规则。分组只影响展示，不影响语义。
- * @type {ReadonlyArray<{heading: string, items: readonly string[]}>}
+ * 带 `preference` 的条目由对应的个人约定开关控制：关闭时该条整体不出现在 prompt 里，
+ * 上游对这些写法本身就允许两种口径，不必再占用每轮请求的 token。
+ *
+ * @type {ReadonlyArray<{heading: string, items: readonly ({text: string, preference?: string} | string)[]}>}
  */
 export const CORE_RULES = [
   {
     heading: '空格与字符',
     items: [
-      '中文与英文之间、中文与数字之间一律加一个半角空格（在 LeanCloud 上、花了 5000 元、2011 年 5 月）。',
+      '中文与英文之间一律加一个半角空格（在 LeanCloud 上、围绕 `AVObject` 进行）。',
+      {
+        preference: 'cjkDigitSpacing',
+        text: '中文与数字之间一律加一个半角空格（花了 5000 元、2011 年 5 月）。',
+      },
       '数字与单位之间加空格（10 Gbps、20 TB、16 GB），但度数和百分号不加（90°、15%）。',
-      '链接锚文本与相邻中文之间各加一个空格（请 [提交一个 issue](#) 并分配）。',
+      {
+        preference: 'linkSpacing',
+        text: '链接锚文本与相邻中文之间各加一个空格（请 [提交一个 issue](#) 并分配）。',
+      },
       '全角标点前后不加空格（买了一个 iPhone，好开心）。',
       '阿拉伯数字一律半角（1000 元，不是 １０００ 元）；专有名词保留官方大小写（GitHub、TypeScript、Next.js），不用 Ts、h5、RJS 这类不地道缩写。',
     ],
@@ -33,7 +43,10 @@ export const CORE_RULES = [
     heading: '标点符号',
     items: [
       '中文语句用全角标点；整句为英文时该句用半角标点。',
-      '简体中文用直角引号：外层「」，内层『』；不使用弯引号（“ ”‘ ’）。',
+      {
+        preference: 'cornerQuotes',
+        text: '简体中文用直角引号：外层「」，内层『』；不使用弯引号（“ ”‘ ’）。',
+      },
       '不重复使用标点（不用 ！！、？？、！？）；感叹号尽量少用。',
       '省略号用 ……（六点、占两个字），不与「等」连用，不用 ... 或 。。。',
       '并列词语用顿号（Google、Facebook、腾讯），最后一个可用「和」连接。',
@@ -70,22 +83,32 @@ export const CORE_RULES = [
 
 /**
  * 渲染注入 system prompt 的段落文本。
- * @param {{ detail?: 'core' | 'strict' }} [options]
+ * @param {{ detail?: 'core' | 'strict', preferences?: unknown }} [options]
  *   `core`（默认）只给高频约束；`strict` 额外追加英文处理与引用规范。
+ *   `preferences` 是三个个人约定开关；关闭的项其条目不再进入 prompt。
  * @returns {string}
  */
 export function buildPromptSection(options = {}) {
+  const preferences = normalizePreferences(options.preferences);
   const groups = options.detail === 'strict' ? [...CORE_RULES, ...STRICT_RULES] : CORE_RULES;
   const lines = [
     '# 中文写作与排版规范',
     `撰写或修改任何中文内容（回复、文档、注释、提交信息、文案）时遵守以下规则。完整条目可用工具 zh_writing_guide 按主题或关键词查询，成稿可用 zh_style_check 自检。规范来源：${PROMPT_SOURCES}。`,
     '',
-    `本部署的个人约定（优先于上游规范中的可选项与争议项）：${PREFERENCES.map((entry) => entry.title).join('；')}。`,
-    '',
   ];
+  const active = activePreferences(preferences);
+  if (active.length > 0) {
+    lines.push(`本部署启用的个人约定（覆盖上游规范中的可选项与争议项）：${active.map((entry) => entry.title).join('；')}。`, '');
+  } else {
+    lines.push('本部署未启用个人约定，完全按两份上游规范的原始口径执行。', '');
+  }
   for (const group of groups) {
+    const items = group.items
+      .filter((item) => typeof item === 'string' || preferences[item.preference] !== false)
+      .map((item) => (typeof item === 'string' ? item : item.text));
+    if (items.length === 0) continue;
     lines.push(`## ${group.heading}`);
-    for (const item of group.items) lines.push(`- ${item}`);
+    for (const item of items) lines.push(`- ${item}`);
     lines.push('');
   }
   return lines.join('\n').trimEnd();

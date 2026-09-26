@@ -14,7 +14,14 @@
  * @module @local/dsh-zh-writing-guide
  */
 
-import { buildGuideText, RULE_COUNT, TOPICS, TOPIC_BY_ID } from './lib/guidelines.js';
+import {
+  buildGuideText,
+  disabledPreferenceRules,
+  normalizePreferences,
+  RULE_COUNT,
+  TOPICS,
+  TOPIC_BY_ID,
+} from './lib/guidelines.js';
 import { buildPromptSection } from './lib/prompt.js';
 import { checkText, renderCheckReport } from './lib/check.js';
 
@@ -62,7 +69,7 @@ function asStringList(value) {
  * 宽松归一化配置：非法值回落到默认值，而不是让整行插件挂掉。
  * @param {unknown} raw `cordis.patch.yml` 里该行的 `config`
  * @returns {{promptSection: boolean, promptDetail: 'core'|'strict', promptOrder: number,
- *   guideTool: boolean, styleCheckTool: boolean,
+ *   guideTool: boolean, styleCheckTool: boolean, preferences: Record<string, boolean>,
  *   check: {maxFindings: number, reportLimit: number, disabledRules: string[]}}}
  */
 export function normalizeConfig(raw) {
@@ -74,6 +81,7 @@ export function normalizeConfig(raw) {
     promptOrder: asNumber(input.promptOrder, DEFAULT_PROMPT_ORDER),
     guideTool: asBoolean(input.guideTool, true),
     styleCheckTool: asBoolean(input.styleCheckTool, true),
+    preferences: normalizePreferences(input.preferences),
     check: {
       maxFindings: asNumber(check.maxFindings, 200),
       reportLimit: asNumber(check.reportLimit, 40),
@@ -82,8 +90,11 @@ export function normalizeConfig(raw) {
   };
 }
 
-/** `zh_writing_guide` 的工具定义。 */
-function guideToolDefinition() {
+/**
+ * `zh_writing_guide` 的工具定义。
+ * @param {ReturnType<typeof normalizeConfig>} config 归一化后的插件配置
+ */
+function guideToolDefinition(config) {
   const topicIds = TOPICS.map((topic) => topic.id);
   return {
     name: GUIDE_TOOL_NAME,
@@ -125,7 +136,7 @@ function guideToolDefinition() {
       if (topic !== '' && !TOPIC_BY_ID.has(topic)) {
         throw new Error(`未知主题 "${topic}"；可用主题：${TOPICS.map((entry) => entry.id).join('、')}`);
       }
-      const { text } = buildGuideText({ topic, query, detail });
+      const { text } = buildGuideText({ topic, query, detail, preferences: config.preferences });
       return { text };
     },
   };
@@ -164,11 +175,18 @@ function styleCheckToolDefinition(config) {
       const request = asObject(args);
       const text = typeof request.text === 'string' ? request.text : '';
       if (text.trim() === '') throw new Error('zh_style_check 需要非空的 text 参数');
+      // 关闭的个人约定同时关掉对应的自检规则，命令式关闭项优先且不会被覆盖。
+      const offByPreference = disabledPreferenceRules(config.preferences);
       const result = checkText(text, {
-        disabledRules: config.check.disabledRules,
+        disabledRules: [...offByPreference, ...config.check.disabledRules],
         maxFindings: config.check.maxFindings,
       });
-      return { text: renderCheckReport(result, { limit: config.check.reportLimit }) };
+      return {
+        text: renderCheckReport(result, {
+          limit: config.check.reportLimit,
+          offRules: offByPreference,
+        }),
+      };
     },
   };
 }
@@ -187,7 +205,7 @@ export function apply(ctx, rawConfig) {
         ctx.systemPrompt.section({
           name: PROMPT_SECTION_NAME,
           order: config.promptOrder,
-          text: () => buildPromptSection({ detail: config.promptDetail }),
+          text: () => buildPromptSection({ detail: config.promptDetail, preferences: config.preferences }),
         }),
       'zh-writing-guide.prompt-section',
     );
@@ -196,7 +214,7 @@ export function apply(ctx, rawConfig) {
   if (config.guideTool || config.styleCheckTool) {
     ctx.inject(['tools'], (scoped) => {
       if (config.guideTool) {
-        scoped.effect(() => scoped.tools.register(guideToolDefinition()), 'zh-writing-guide.tool.guide');
+        scoped.effect(() => scoped.tools.register(guideToolDefinition(config)), 'zh-writing-guide.tool.guide');
       }
       if (config.styleCheckTool) {
         scoped.effect(
